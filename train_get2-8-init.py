@@ -470,6 +470,31 @@ class DataLoaderLite:
         return x, y
 
 
+def load_checkpoint(checkpoint_path, device='cpu'):
+    """
+    Load a saved model checkpoint.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file (.pt)
+        device: Device to load the model on ('cpu', 'cuda', 'mps')
+        
+    Returns:
+        model: Loaded GPT model
+        checkpoint: Dictionary containing checkpoint information
+    """
+    print(f"Loading checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    # Create model with saved config
+    config = checkpoint['config']
+    model = GPT(config)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
+    
+    print(f"Loaded model from step {checkpoint['step']} with loss {checkpoint['loss']:.4f}")
+    return model, checkpoint
+
+
 # Initialize GPT model with default configuration (GPT-2 small architecture)
 model = GPT(GPTConfig())
 model.to(device)  # Move model to selected device (CPU/GPU)
@@ -507,12 +532,18 @@ def get_lr(it):
     progress = (it - WARMUP_STEPS) / (MAX_STEPS - WARMUP_STEPS)
     return LEARNING_RATE * 0.5 * (1.0 + math.cos(math.pi * progress))
 
+# Create checkpoint directory for saving models
+checkpoint_dir = 'checkpoints'
+os.makedirs(checkpoint_dir, exist_ok=True)
+
 # Training loop with optimizations
 print(f"Starting training with batch_size={BATCH_SIZE}, seq_length={SEQ_LENGTH}")
 print(f"Total steps: {MAX_STEPS}, Warmup steps: {WARMUP_STEPS}")
+print(f"Checkpoints will be saved to: {checkpoint_dir}/")
 print("-" * 60)
 
 best_loss = float('inf')
+best_step = 0
 losses = []
 
 for step in range(MAX_STEPS):
@@ -544,24 +575,60 @@ for step in range(MAX_STEPS):
     # Step 8: Track loss
     loss_val = loss.item()
     losses.append(loss_val)
+    
+    # Step 9: Save model checkpoint if this is the best loss so far
     if loss_val < best_loss:
         best_loss = loss_val
+        best_step = step
+        
+        # Save checkpoint with model state, optimizer state, and training info
+        checkpoint = {
+            'step': step,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': loss_val,
+            'best_loss': best_loss,
+            'config': model.config,
+            'learning_rate': lr,
+        }
+        
+        # Save best model checkpoint
+        checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pt')
+        torch.save(checkpoint, checkpoint_path)
+        print(f'✓ Saved best model checkpoint at step {step} with loss {loss_val:.4f}')
     
-    # Step 9: Print progress periodically
+    # Step 10: Print progress periodically
     if step % 100 == 0 or step < 10:
-        print(f'step {step:5d} | lr: {lr:.2e} | loss: {loss_val:.4f} | best: {best_loss:.4f}')
+        print(f'step {step:5d} | lr: {lr:.2e} | loss: {loss_val:.4f} | best: {best_loss:.4f} (step {best_step})')
     
     # Early stopping if loss becomes very small (optional)
     if loss_val < 0.01:
         print(f"Loss converged to {loss_val:.4f} at step {step}")
         break
 
+# Save final model checkpoint
+final_checkpoint = {
+    'step': step,
+    'model_state_dict': model.state_dict(),
+    'optimizer_state_dict': optimizer.state_dict(),
+    'loss': losses[-1],
+    'best_loss': best_loss,
+    'best_step': best_step,
+    'config': model.config,
+    'learning_rate': get_lr(step),
+    'total_steps': len(losses),
+}
+final_checkpoint_path = os.path.join(checkpoint_dir, 'final_model.pt')
+torch.save(final_checkpoint, final_checkpoint_path)
+
 # Print training summary
 print("-" * 60)
 print(f"Training completed!")
 print(f"Final loss: {losses[-1]:.4f}")
-print(f"Best loss: {best_loss:.4f}")
+print(f"Best loss: {best_loss:.4f} (achieved at step {best_step})")
 print(f"Average loss (last 100 steps): {sum(losses[-100:])/len(losses[-100:]):.4f}")
+print(f"Best model saved to: {os.path.join(checkpoint_dir, 'best_model.pt')}")
+print(f"Final model saved to: {os.path.join(checkpoint_dir, 'final_model.pt')}")
 
 import sys; sys.exit(0)  # Exit early (generation code below is not executed)
 
